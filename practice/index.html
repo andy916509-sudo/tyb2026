@@ -124,6 +124,10 @@
   .lib-part span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .lib-part button, .lib-song-head button { min-height: 28px; padding: 2px 8px; font-size: 12px; }
   .lib-empty { color: var(--muted); }
+  .lib-part input { flex: 1; min-width: 0; font: inherit; color: var(--ink); background: transparent; border: 1px solid transparent; border-radius: 6px; padding: 3px 6px; }
+  .lib-part input:hover, .lib-part input:focus { border-color: var(--line); background: var(--panel); }
+  .lib-msg { white-space: pre-line; color: var(--accent); background: var(--soft); border-radius: 8px; padding: 8px 12px; font-size: 14px; }
+  button.danger { color: var(--accent); border-color: var(--accent); }
 
   @media (max-width: 640px) {
     .mixer { position: fixed; left: 0; right: 0; bottom: 0; top: auto; width: auto; max-width: none; max-height: 70vh; overflow-y: auto;
@@ -233,6 +237,7 @@
     <p class="help-lead">加入 <b>MusicXML</b> 檔（<code>.musicxml</code>、<code>.xml</code>、<code>.mxl</code>）。MuseScore、Sibelius、Finale、Dorico 都能匯出。<br>
       同一首曲子的各聲部請用 <b>同一個曲名</b>，就能在「合奏」一起播放。檔案只存在這台裝置的瀏覽器裡。</p>
     <p><button id="lib-add" class="primary" type="button">＋ 加入樂譜檔</button></p>
+    <p id="lib-msg" class="lib-msg" role="status" hidden></p>
     <div id="lib-list"></div>
   </div>
   <div class="help-foot"><button data-close type="button">完成</button></div>
@@ -1091,7 +1096,7 @@ for (const d of document.querySelectorAll("dialog")) {
 }
 $("#btn-help").onclick = () => $("#help").showModal();
 $("#help").addEventListener("close", () => store.set("helpSeen", true));
-$("#btn-library").onclick = () => { renderLibrary(); $("#library").showModal(); };
+$("#btn-library").onclick = () => { $("#lib-msg").hidden = true; renderLibrary(); $("#library").showModal(); };
 $("#lib-add").onclick = () => $("#file-input").click();
 $("#file-input").onchange = async (e) => { const files = [...e.target.files]; e.target.value = ""; await importFiles(files); };
 
@@ -1120,7 +1125,10 @@ async function importFiles(files) {
     } catch (e) { errs.push(f.name + "：" + (e.message || e)); }
   }
   await refreshLibrary(first ? { song: "l:" + first.song, id: first.id } : null);
-  if (errs.length) alert("有些檔案無法加入：\n" + errs.join("\n"));
+  if (errs.length) {
+    const msg = $("#lib-msg"); msg.textContent = "有些檔案無法加入：\n" + errs.join("\n"); msg.hidden = false;
+    if (!$("#library").open) $("#library").showModal();
+  }
 }
 async function refreshLibrary(goto) {
   const cur = S.song ? { key: S.song.key, id: S.song.files[S.fileIdx]?.id } : null;
@@ -1132,6 +1140,16 @@ async function refreshLibrary(goto) {
   const idx = Math.max(0, song.files.findIndex((f) => f.id === (target && target.id)));
   await selectPart(song.key, idx);
 }
+function confirmButton(label, action) {
+  const b = document.createElement("button"); b.type = "button"; b.textContent = label;
+  let armed = 0;
+  b.onclick = async () => {
+    if (!armed) { b.textContent = "確定刪除？"; b.classList.add("danger"); armed = setTimeout(() => { armed = 0; b.textContent = label; b.classList.remove("danger"); }, 3000); return; }
+    clearTimeout(armed); armed = 0; await action();
+  };
+  return b;
+}
+async function updateRecord(id, fn) { const rec = (await db.all()).find((r) => r.id === id); if (rec) { fn(rec); await db.put(rec); } }
 function renderLibrary() {
   const list = $("#lib-list"); list.innerHTML = "";
   if (!S.songs.length) { list.innerHTML = '<p class="lib-empty">還沒有樂譜。</p>'; return; }
@@ -1142,13 +1160,11 @@ function renderLibrary() {
       const inp = document.createElement("input"); inp.value = s.title; inp.setAttribute("aria-label", "曲名");
       inp.onchange = async () => {
         const v = inp.value.trim(); if (!v || v === s.title) return;
-        for (const f of s.files) { const all = await db.all(); const rec = all.find((r) => r.id === f.id); if (rec) { rec.song = v; await db.put(rec); } }
+        for (const f of s.files) await updateRecord(f.id, (r) => { r.song = v; });
         await refreshLibrary({ song: "l:" + v, id: S.song && S.song.key === s.key ? S.song.files[S.fileIdx].id : s.files[0].id });
       };
       head.appendChild(inp);
-      const del = document.createElement("button"); del.textContent = "刪除整首";
-      del.onclick = async () => { if (!confirm(`刪除「${s.title}」的所有聲部？`)) return; for (const f of s.files) await db.del(f.id); await refreshLibrary(); };
-      head.appendChild(del);
+      head.appendChild(confirmButton("刪除整首", async () => { for (const f of s.files) await db.del(f.id); await refreshLibrary(); }));
     } else {
       const b = document.createElement("strong"); b.textContent = s.title; b.style.flex = "1"; head.appendChild(b);
       const tag = document.createElement("span"); tag.className = "tag"; tag.textContent = "網站內建"; head.appendChild(tag);
@@ -1156,21 +1172,17 @@ function renderLibrary() {
     box.appendChild(head);
     s.files.forEach((f, i) => {
       const row = document.createElement("div"); row.className = "lib-part";
-      const sp = document.createElement("span"); sp.textContent = "♪ " + f.name; row.appendChild(sp);
-      const open = document.createElement("button"); open.textContent = "開啟";
+      if (s.source === "local") {
+        const inp = document.createElement("input"); inp.value = f.name; inp.setAttribute("aria-label", "聲部名稱");
+        inp.onchange = async () => { const v = inp.value.trim(); if (!v) { inp.value = f.name; return; } await updateRecord(f.id, (r) => { r.name = v; }); await refreshLibrary(); };
+        row.appendChild(inp);
+      } else {
+        const sp = document.createElement("span"); sp.textContent = "♪ " + f.name; row.appendChild(sp);
+      }
+      const open = document.createElement("button"); open.type = "button"; open.textContent = "開啟";
       open.onclick = () => { $("#library").close(); selectPart(s.key, i); };
       row.appendChild(open);
-      if (s.source === "local") {
-        const ren = document.createElement("button"); ren.textContent = "改名";
-        ren.onclick = async () => {
-          const v = prompt("聲部名稱", f.name); if (!v || !v.trim()) return;
-          const rec = (await db.all()).find((r) => r.id === f.id); if (rec) { rec.name = v.trim(); await db.put(rec); }
-          await refreshLibrary();
-        };
-        const del = document.createElement("button"); del.textContent = "刪除";
-        del.onclick = async () => { if (!confirm(`刪除「${f.name}」？`)) return; await db.del(f.id); await refreshLibrary(); };
-        row.appendChild(ren); row.appendChild(del);
-      }
+      if (s.source === "local") row.appendChild(confirmButton("刪除", async () => { await db.del(f.id); await refreshLibrary(); }));
       box.appendChild(row);
     });
     list.appendChild(box);
