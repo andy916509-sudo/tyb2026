@@ -1,0 +1,12 @@
+{
+  "songs": [
+    {
+      "title": "歡樂頌 Ode to Joy（範例）",
+      "parts": [
+        { "name": "Flute", "file": "ode-to-joy-flute.musicxml" },
+        { "name": "Clarinet in Bb", "file": "ode-to-joy-clarinet.musicxml" },
+        { "name": "Tuba", "file": "ode-to-joy-tuba.musicxml" }
+      ]
+    }
+  ]
+}
